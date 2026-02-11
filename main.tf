@@ -57,15 +57,15 @@ resource "aws_iam_policy" "FullAdminDeployRegion" {
 
 # IAM group
 resource "aws_iam_group" "cloudspace_engineers" {
-  name = "CloudSpace-Engineers-Cluster_Name"
+  name = "CloudSpace-Engineers"
 }
 
 resource "aws_iam_group" "nas_security_team" {
-  name = "security"
+  name = "Nas_Financial_security"
 }
 
 resource "aws_iam_group" "Operations" {
-  name = "Operations"
+  name = "Nas_Financial_Operations"
 }
 
 # Attach to IAM group
