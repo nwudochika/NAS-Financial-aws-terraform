@@ -281,15 +281,6 @@ resource "aws_launch_template" "ec2_launchtemplate" {
   image_id      = data.aws_ami.amazon_linux_latest.id
   instance_type = var.instance_type
   vpc_security_group_ids = [aws_security_group.ec2_sg.id]
-  user_data = base64encode(<<EOF
-#!/bin/bash
-yum update -y
-yum install -y httpd
-systemctl start httpd
-systemctl enable httpd
-echo "<h1>Welcome to Fidelis Nwudo web server deployed with Terraform!</h1>" > /var/www/html/index.html
-EOF
-)
 
   tag_specifications {
     resource_type = "instance"
@@ -323,4 +314,55 @@ resource "aws_autoscaling_group" "asg" {
     value               = "ASG-Instances"
     propagate_at_launch = true
   }
+}
+
+# Database subnet group
+resource "aws_db_subnet_group" "default" {
+  name       = "nas-db-subnet-group"
+  subnet_ids = [aws_subnet.private1.id, aws_subnet.private2.id]
+
+  tags = {
+    Name = "nas-db-subnet-group"
+  }
+}
+
+# Data Base security_groups
+resource "aws_security_group" "database_sg" {
+  name        = "database-access-sg"
+  description = "Allow database access only from instances"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    security_groups = [aws_security_group.ec2_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "DatabaseAccessSG"
+  }
+}
+
+
+resource "aws_db_instance" "default" {
+  identifier            = "nas-financial-db"
+  allocated_storage     = 10
+  db_name              = "mydb"
+  engine               = "mysql"
+  engine_version       = "8.0"
+  instance_class       = "db.t3.micro"
+  username             = var.db_username
+  password             = var.db_password
+  db_subnet_group_name = aws_db_subnet_group.default.name
+  vpc_security_group_ids = [aws_security_group.database_sg.id]
+  publicly_accessible  = false
+  skip_final_snapshot  = true
 }
