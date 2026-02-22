@@ -271,26 +271,162 @@ resource "aws_lb_listener" "https_listener" {
   load_balancer_arn = aws_lb.alb.arn
   port              = 443
   protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-2016-08" 
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
   certificate_arn   = var.certificate_arn
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.tg.arn 
+    target_group_arn = aws_lb_target_group.tg.arn
   }
 }
 
-# Route Domain to ALB
-resource "aws_route53_record" "www" {
-    zone_id = var.zone_id
-    name    = "www.fcjnwudo.com" 
-    type    = "A"
+# Serve sorry page for non-US (CloudFront fetches this when returning custom 403 response)
+resource "aws_lb_listener_rule" "sorry_page" {
+  listener_arn = aws_lb_listener.https_listener.arn
+  priority     = 100
 
-    alias {
-    name                   = aws_lb.alb.dns_name
-    zone_id                = aws_lb.alb.zone_id
-    evaluate_target_health = true
+  action {
+    type = "fixed-response"
+    fixed_response {
+      content_type = "text/html"
+      message_body = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Access restricted</title></head><body><h1>Sorry you are not in a country authorized to access this web page</h1></body></html>"
+      status_code  = "200"
     }
+  }
+
+  condition {
+    path_pattern {
+      values = ["/sorry.html"]
+    }
+  }
+}
+
+# Route 53: single A record for www → one CloudFront (geo + custom error handled inside CloudFront)
+resource "aws_route53_record" "www" {
+  zone_id = var.zone_id
+  name    = "www.fcjnwudo.com"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.main.domain_name
+    zone_id                = aws_cloudfront_distribution.main.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+
+# S3 bucket: static "sorry" page for non-US visitors (GDPR)
+resource "aws_s3_bucket" "sorry_page" {
+  bucket = "nas-financial-sorry-page-${data.aws_caller_identity.current.account_id}"
+
+  tags = {
+    Name = "nas-financial-sorry-page"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "sorry_page" {
+  bucket = aws_s3_bucket.sorry_page.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# Static HTML object: "Sorry you are not in a country authorized to access this web page"
+resource "aws_s3_object" "sorry_index" {
+  bucket       = aws_s3_bucket.sorry_page.id
+  key          = "index.html"
+  content_type = "text/html; charset=utf-8"
+  content      = <<-EOT
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Access restricted</title>
+</head>
+<body>
+  <h1>Sorry you are not in a country authorized to access this web page</h1>
+</body>
+</html>
+EOT
+}
+
+data "aws_caller_identity" "current" {}
+
+# CloudFront Origin Access Control (OAC) for S3
+resource "aws_cloudfront_origin_access_control" "s3_oac" {
+  name                              = "nas-financial-s3-oac"
+  description                       = "OAC for S3 sorry page bucket"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+# CloudFront distribution (main): ALB only — for US (Route 53 geolocation)
+resource "aws_cloudfront_distribution" "main" {
+  enabled             = true
+  is_ipv6_enabled     = true
+  default_root_object = ""
+  comment             = "NAS Financial - dynamic site (US)"
+  price_class         = "PriceClass_100"
+
+  origin {
+    domain_name = aws_lb.alb.dns_name
+    origin_id   = "alb"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  default_cache_behavior {
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD", "OPTIONS"]
+    target_origin_id       = "alb"
+    compress               = true
+    viewer_protocol_policy = "redirect-to-https"
+
+    forwarded_values {
+      query_string = true
+      headers      = ["Host"]
+      cookies {
+        forward = "all"
+      }
+    }
+  }
+
+  # US only; non-US get 403 → custom error shows sorry page from origin /sorry.html
+  restrictions {
+    geo_restriction {
+      restriction_type = "whitelist"
+      locations        = ["US"]
+    }
+  }
+
+  custom_error_response {
+    error_code            = 403
+    response_code        = 200
+    response_page_path   = "/sorry.html"
+    error_caching_min_ttl = 60
+  }
+
+  viewer_certificate {
+    acm_certificate_arn      = length(var.cloudfront_aliases) > 0 ? var.certificate_arn : null
+    ssl_support_method       = length(var.cloudfront_aliases) > 0 ? "sni-only" : null
+    minimum_protocol_version = length(var.cloudfront_aliases) > 0 ? "TLSv1.2_2021" : null
+    cloudfront_default_certificate = length(var.cloudfront_aliases) == 0 ? true : null
+  }
+
+  aliases = var.cloudfront_aliases
+
+  tags = {
+    Name = "nas-financial-cf-main"
+  }
 }
 
 # Data Source AMI
@@ -333,8 +469,8 @@ resource "aws_launch_template" "ec2_launchtemplate" {
 resource "aws_autoscaling_group" "asg" {
   name               = "asg-terraform"
   max_size           = 2
-  min_size           = 2
-  desired_capacity   = 2
+  min_size           = 1
+  desired_capacity   = 1
   target_group_arns = [aws_lb_target_group.tg.arn]
 
 
@@ -456,4 +592,4 @@ resource "aws_db_instance" "default" {
   multi_az             = true
   skip_final_snapshot  = true
   # enable_deletion_protection = true
-} 
+}

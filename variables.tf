@@ -14,6 +14,12 @@ variable "zone_id" {
   type        = string
 }
 
+variable "cloudfront_aliases" {
+  description = "Custom domain aliases for the main CloudFront distribution. Set to [] temporarily if CNAMEAlreadyExists; then set to [\"www.fcjnwudo.com\"] and apply again."
+  type        = list(string)
+  default     = ["www.fcjnwudo.com"]
+}
+
 variable "db_username" {
   description = "Master username for the RDS database"
   type        = string

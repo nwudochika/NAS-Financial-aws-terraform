@@ -22,6 +22,9 @@ override.tf.json
 # Terraform plan files
 *.tfplan
 
+# Lambda deploy package (generated from lambda_geo_edge.js)
+lambda_geo_edge.zip
+
 # Terraform CLI configuration files
 .terraformrc
 terraform.rc
