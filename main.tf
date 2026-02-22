@@ -84,12 +84,159 @@ resource "aws_iam_group_policy_attachment" "Operations_admin" {
   policy_arn = aws_iam_policy.FullAdminDeployRegion.arn
 }
 
+# --- Web server management: only CloudSpace engineers, via SSM Session Manager (no SSH) ---
+
+# IAM role for EC2 so they can register with SSM (required for Session Manager)
+resource "aws_iam_role" "ec2_ssm" {
+  name = "nas-financial-ec2-ssm-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = { Service = "ec2.amazonaws.com" }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_ssm" {
+  role       = aws_iam_role.ec2_ssm.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "ec2_ssm" {
+  name = "nas-financial-ec2-ssm-profile"
+  role = aws_iam_role.ec2_ssm.name
+}
+
+# Only CloudSpace Engineers may use Session Manager on web servers (tagged ManagedBy=CloudSpace)
+resource "aws_iam_policy" "cloudspace_web_server_ssm" {
+  name        = "CloudSpaceWebServerSSM"
+  description = "Allow Session Manager access only to web servers (ManagedBy=CloudSpace)"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowSSMOnWebServers"
+        Effect = "Allow"
+        Action = [
+          "ssm:StartSession",
+          "ssm:ResumeSession",
+          "ssm:DescribeSessions",
+          "ssm:GetConnectionStatus",
+          "ssm:TerminateSession"
+        ]
+        Resource = "arn:aws:ec2:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Condition = {
+          StringEquals = { "ec2:ResourceTag/ManagedBy" = "CloudSpace" }
+        }
+      },
+      {
+        Sid    = "AllowSSMSessionDocuments"
+        Effect = "Allow"
+        Action = "ssm:StartSession"
+        Resource = "arn:aws:ssm:*:*:session/document/AWS-StartInteractiveCommand"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_group_policy_attachment" "cloudspace_web_server_ssm" {
+  group      = aws_iam_group.cloudspace_engineers.name
+  policy_arn = aws_iam_policy.cloudspace_web_server_ssm.arn
+}
+
+# NAS Security and Operations must NOT manage web servers via SSM (deny on tagged instances)
+resource "aws_iam_policy" "deny_web_server_ssm" {
+  name        = "DenyWebServerSSM"
+  description = "Deny SSM Session Manager and Run Command on web servers (CloudSpace only)"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DenySSMOnWebServers"
+        Effect = "Deny"
+        Action = [
+          "ssm:StartSession",
+          "ssm:SendCommand",
+          "ssm:ResumeSession",
+          "ssm:TerminateSession"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = { "ec2:ResourceTag/ManagedBy" = "CloudSpace" }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_group_policy_attachment" "nas_security_deny_web_ssm" {
+  group      = aws_iam_group.nas_security_team.name
+  policy_arn = aws_iam_policy.deny_web_server_ssm.arn
+}
+
+resource "aws_iam_group_policy_attachment" "operations_deny_web_ssm" {
+  group      = aws_iam_group.Operations.name
+  policy_arn = aws_iam_policy.deny_web_server_ssm.arn
+}
+
+# --- PROJECT-1: N2G Auditing — Trusted Advisor only (cross-account role) ---
+# Recommend AWS Trusted Advisor for Cost, Performance, Security, Fault Tolerance. N2G gets console access to that service only.
+resource "aws_iam_role" "n2g_trusted_advisor" {
+  count = length(var.n2g_auditing_account_id) > 0 ? 1 : 0
+
+  name = "N2G-Auditing-TrustedAdvisor-Role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = { AWS = "arn:aws:iam::${var.n2g_auditing_account_id}:root" }
+        Action   = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "n2g_trusted_advisor_only" {
+  count = length(var.n2g_auditing_account_id) > 0 ? 1 : 0
+
+  name   = "TrustedAdvisorOnly"
+  role   = aws_iam_role.n2g_trusted_advisor[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "TrustedAdvisorFullAccess"
+        Effect = "Allow"
+        Action = [
+          "support:DescribeTrustedAdvisorChecks",
+          "support:DescribeTrustedAdvisorCheckResult",
+          "support:DescribeTrustedAdvisorCheckSummaries",
+          "support:RefreshTrustedAdvisorCheck",
+          "support:DescribeCases",
+          "support:DescribeSeverityLevels"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
 
 # VPC, subnets, route table, internet gateway
 
 resource "aws_vpc" "main" {
-  cidr_block       = "10.0.0.0/16"
-  instance_tenancy = "default"
+  cidr_block           = "10.0.0.0/16"
+  instance_tenancy     = "default"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
 
   tags = {
     Name = "main"
@@ -204,6 +351,57 @@ resource "aws_route_table_association" "private2" {
   route_table_id = aws_route_table.private_rt.id
 }
 
+# Security group for VPC endpoints (SSM) — allow HTTPS from VPC only
+resource "aws_security_group" "vpc_endpoints" {
+  vpc_id      = aws_vpc.main.id
+  name        = "vpc-endpoints-sg"
+  description = "Allow HTTPS from VPC for SSM endpoints"
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "vpc-endpoints-sg" }
+}
+
+# VPC endpoints for SSM — traffic stays in AWS (no internet), best practice for Session Manager
+resource "aws_vpc_endpoint" "ssm" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.ssm"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = [aws_subnet.private1.id, aws_subnet.private2.id]
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+}
+
+resource "aws_vpc_endpoint" "ec2messages" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.ec2messages"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = [aws_subnet.private1.id, aws_subnet.private2.id]
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+}
+
+resource "aws_vpc_endpoint" "ssmmessages" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.ssmmessages"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = [aws_subnet.private1.id, aws_subnet.private2.id]
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+}
+
 # ALB Security Group
 resource "aws_security_group" "alb_sg" {
   vpc_id = aws_vpc.main.id
@@ -314,6 +512,54 @@ resource "aws_route53_record" "www" {
   }
 }
 
+# --- PROJECT-1: At least 2 monitoring systems when website is down (AWS native) ---
+resource "aws_sns_topic" "website_alerts" {
+  name = "nas-financial-website-alerts"
+}
+
+resource "aws_sns_topic_subscription" "website_alerts_email" {
+  count     = length(var.alert_email) > 0 ? 1 : 0
+  topic_arn = aws_sns_topic.website_alerts.arn
+  protocol  = "email"
+  endpoint  = var.alert_email
+}
+
+# Monitoring 1: ALB 5xx errors (website failure)
+resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
+  alarm_name          = "nas-financial-alb-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_ELB_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "Website ALB returning 5xx errors"
+  alarm_actions       = [aws_sns_topic.website_alerts.arn]
+
+  dimensions = {
+    LoadBalancer = aws_lb.alb.arn_suffix
+  }
+}
+
+# Monitoring 2: Unhealthy targets (no healthy web servers)
+resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
+  alarm_name          = "nas-financial-unhealthy-hosts"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 2
+  metric_name         = "UnHealthyHostCount"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 1
+  alarm_description   = "Website has unhealthy target(s)"
+  alarm_actions       = [aws_sns_topic.website_alerts.arn]
+
+  dimensions = {
+    LoadBalancer = aws_lb.alb.arn_suffix
+    TargetGroup  = aws_lb_target_group.tg.arn_suffix
+  }
+}
 
 # S3 bucket: static "sorry" page for non-US visitors (GDPR)
 resource "aws_s3_bucket" "sorry_page" {
@@ -351,6 +597,61 @@ resource "aws_s3_object" "sorry_index" {
 </body>
 </html>
 EOT
+}
+
+# --- PROJECT-1: Storage — customer PII, encrypted at rest, 30 days then archive, keep 5 years ---
+resource "aws_s3_bucket" "customer_pii" {
+  bucket = "nas-financial-customer-pii-${data.aws_caller_identity.current.account_id}"
+
+  tags = {
+    Name = "nas-financial-customer-pii"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "customer_pii" {
+  bucket = aws_s3_bucket.customer_pii.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "customer_pii" {
+  bucket = aws_s3_bucket.customer_pii.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "customer_pii" {
+  bucket = aws_s3_bucket.customer_pii.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "customer_pii" {
+  bucket = aws_s3_bucket.customer_pii.id
+
+  rule {
+    id     = "pii-30d-glacier-5y-retention"
+    status = "Enabled"
+
+    transition {
+      days          = 30
+      storage_class = "GLACIER"
+    }
+
+    expiration {
+      days = 1825 # 5 years
+    }
+  }
 }
 
 data "aws_caller_identity" "current" {}
@@ -450,17 +751,21 @@ data "aws_ami" "amazon_linux_latest" {
   }
 }
 
-# Launch Template
+# Launch Template (SSM instance profile + tag so only CloudSpace can manage)
 resource "aws_launch_template" "ec2_launchtemplate" {
   name_prefix   = "ec2-launchtemplate"
   image_id      = data.aws_ami.amazon_linux_latest.id
   instance_type = var.instance_type
   vpc_security_group_ids = [aws_security_group.ec2_sg.id]
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_ssm.name
+  }
 
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name = "ASG-Web-Server"
+      Name       = "ASG-Web-Server"
+      ManagedBy  = "CloudSpace"
     }
   }
 }
@@ -487,6 +792,112 @@ resource "aws_autoscaling_group" "asg" {
   tag {
     key                 = "Name"
     value               = "ASG-Instances"
+    propagate_at_launch = true
+  }
+}
+
+# --- PROJECT-1: Intranet application (not publicly accessible, HTTP, server can update packages via NAT) ---
+resource "aws_security_group" "intranet_alb_sg" {
+  vpc_id      = aws_vpc.main.id
+  name        = "intranet-alb-sg"
+  description = "Internal ALB for intranet; allow HTTP from VPC (company users via VPN/VPC)"
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "intranet-alb-sg" }
+}
+
+resource "aws_security_group" "intranet_ec2_sg" {
+  vpc_id      = aws_vpc.main.id
+  name        = "intranet-ec2-sg"
+  description = "Intranet app instances; HTTP from internal ALB only"
+
+  ingress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.intranet_alb_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "intranet-ec2-sg" }
+}
+
+resource "aws_lb_target_group" "intranet_tg" {
+  name        = "nas-intranet-tg"
+  target_type = "instance"
+  port        = 80
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+}
+
+resource "aws_lb" "intranet_alb" {
+  name               = "nas-intranet-alb"
+  internal           = true
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.intranet_alb_sg.id]
+  subnets            = [aws_subnet.private1.id, aws_subnet.private2.id]
+}
+
+resource "aws_lb_listener" "intranet_http" {
+  load_balancer_arn = aws_lb.intranet_alb.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.intranet_tg.arn
+  }
+}
+
+resource "aws_launch_template" "intranet" {
+  name_prefix   = "nas-intranet-lt-"
+  image_id      = data.aws_ami.amazon_linux_latest.id
+  instance_type = var.instance_type
+  vpc_security_group_ids = [aws_security_group.intranet_ec2_sg.id]
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "NAS-Intranet-App"
+    }
+  }
+}
+
+resource "aws_autoscaling_group" "intranet" {
+  name               = "nas-intranet-asg"
+  min_size           = 1
+  max_size           = 2
+  desired_capacity   = 1
+  target_group_arns  = [aws_lb_target_group.intranet_tg.arn]
+  vpc_zone_identifier = [aws_subnet.private1.id, aws_subnet.private2.id]
+
+  launch_template {
+    id      = aws_launch_template.intranet.id
+    version = "$Latest"
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "Intranet-App"
     propagate_at_launch = true
   }
 }
@@ -557,7 +968,8 @@ resource "aws_efs_file_system" "main" {
   encrypted      = true
 
   tags = {
-    Name = "nas-financial-efs"
+    Name    = "nas-financial-efs"
+    Backup  = "nas-financial-dr"
   }
 }
 
@@ -592,4 +1004,85 @@ resource "aws_db_instance" "default" {
   multi_az             = true
   skip_final_snapshot  = true
   # enable_deletion_protection = true
+
+  tags = {
+    Backup = "nas-financial-dr"
+  }
+}
+
+# --- Disaster recovery: backup app tier (EFS) & database tier (RDS) to a different region ---
+
+# Primary region backup vault (us-east-1)
+resource "aws_backup_vault" "primary" {
+  name = "nas-financial-primary-vault"
+}
+
+# DR region backup vault (us-west-2)
+resource "aws_backup_vault" "dr" {
+  provider = aws.dr
+  name     = "nas-financial-dr-vault"
+}
+
+# Backup plan: daily backup of RDS and EFS, copy to us-west-2
+resource "aws_backup_plan" "dr" {
+  name = "nas-financial-dr-plan"
+
+  rule {
+    rule_name         = "daily_backup_to_dr"
+    target_vault_name = aws_backup_vault.primary.name
+    schedule          = "cron(0 5 * * ? *)" # 05:00 UTC daily
+
+    lifecycle {
+      delete_after = 35
+    }
+
+    copy_action {
+      destination_vault_arn = aws_backup_vault.dr.arn
+      lifecycle {
+        delete_after = 35
+      }
+    }
+  }
+}
+
+# Assign RDS and EFS to the backup plan
+resource "aws_backup_selection" "dr" {
+  name         = "nas-financial-rds-efs"
+  plan_id      = aws_backup_plan.dr.id
+  iam_role_arn = aws_iam_role.backup.arn
+
+  resources = [
+    "arn:aws:rds:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:db:${aws_db_instance.default.id}",
+    aws_efs_file_system.main.arn
+  ]
+}
+
+data "aws_region" "current" {}
+
+# IAM role for AWS Backup
+resource "aws_iam_role" "backup" {
+  name = "nas-financial-backup-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "backup.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "backup" {
+  role       = aws_iam_role.backup.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
+}
+
+resource "aws_iam_role_policy_attachment" "backup_restore" {
+  role       = aws_iam_role.backup.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores"
 }

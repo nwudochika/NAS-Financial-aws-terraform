@@ -30,3 +30,15 @@ variable "db_password" {
   type        = string
   sensitive   = true
 }
+
+variable "alert_email" {
+  description = "Email address for website-down alerts (SNS subscription). Set in tfvars; confirm via email after apply."
+  type        = string
+  default     = ""
+}
+
+variable "n2g_auditing_account_id" {
+  description = "AWS account ID of N2G Auditing (for cross-account Trusted Advisor role)"
+  type        = string
+  default     = ""
+}
