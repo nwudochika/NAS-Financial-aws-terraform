@@ -165,6 +165,45 @@ resource "aws_route_table_association" "a2" {
   route_table_id = aws_route_table.public_rt.id
 }
 
+# NAT Gateway (so private instances can reach internet for updates)
+resource "aws_eip" "nat" {
+  domain = "vpc"
+  tags = {
+    Name = "nat-eip"
+  }
+}
+
+resource "aws_nat_gateway" "main" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public1.id
+  tags = {
+    Name = "main-nat"
+  }
+  depends_on = [aws_internet_gateway.igw]
+}
+
+# Private route table: send outbound traffic via NAT
+resource "aws_route_table" "private_rt" {
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main.id
+  }
+  tags = {
+    Name = "private-rt"
+  }
+}
+
+resource "aws_route_table_association" "private1" {
+  subnet_id      = aws_subnet.private1.id
+  route_table_id = aws_route_table.private_rt.id
+}
+
+resource "aws_route_table_association" "private2" {
+  subnet_id      = aws_subnet.private2.id
+  route_table_id = aws_route_table.private_rt.id
+}
+
 # ALB Security Group
 resource "aws_security_group" "alb_sg" {
   vpc_id = aws_vpc.main.id
@@ -293,15 +332,15 @@ resource "aws_launch_template" "ec2_launchtemplate" {
 # Autoscaling Group
 resource "aws_autoscaling_group" "asg" {
   name               = "asg-terraform"
-  max_size           = 3
+  max_size           = 2
   min_size           = 2
   desired_capacity   = 2
   target_group_arns = [aws_lb_target_group.tg.arn]
 
 
   vpc_zone_identifier = [
-    aws_subnet.public1.id,
-    aws_subnet.public2.id
+    aws_subnet.private1.id,
+    aws_subnet.private2.id
   ]
 
   launch_template {
@@ -351,6 +390,55 @@ resource "aws_security_group" "database_sg" {
   }
 }
 
+# EFS security group: allow web servers to mount via NFS (port 2049)
+resource "aws_security_group" "efs_sg" {
+  name        = "efs-access-sg"
+  description = "Allow NFS access from web servers"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port       = 2049
+    to_port         = 2049
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ec2_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "EFSAccessSG"
+  }
+}
+
+# EFS file system for shared storage (e.g. web app uploads)
+resource "aws_efs_file_system" "main" {
+  creation_token = "nas-financial-efs"
+  encrypted      = true
+
+  tags = {
+    Name = "nas-financial-efs"
+  }
+}
+
+# EFS mount target in private subnet 1 (us-east-1c)
+resource "aws_efs_mount_target" "private1" {
+  file_system_id  = aws_efs_file_system.main.id
+  subnet_id       = aws_subnet.private1.id
+  security_groups = [aws_security_group.efs_sg.id]
+}
+
+# EFS mount target in private subnet 2 (us-east-1d)
+resource "aws_efs_mount_target" "private2" {
+  file_system_id  = aws_efs_file_system.main.id
+  subnet_id       = aws_subnet.private2.id
+  security_groups = [aws_security_group.efs_sg.id]
+}
+
 
 resource "aws_db_instance" "default" {
   identifier            = "nas-financial-db"
@@ -360,9 +448,12 @@ resource "aws_db_instance" "default" {
   engine_version       = "8.0"
   instance_class       = "db.t3.micro"
   username             = var.db_username
+  # manage_master_user_password = true
   password             = var.db_password
   db_subnet_group_name = aws_db_subnet_group.default.name
   vpc_security_group_ids = [aws_security_group.database_sg.id]
-  publicly_accessible  = false
+  publicly_accessible   = false
+  multi_az             = true
   skip_final_snapshot  = true
-}
+  # enable_deletion_protection = true
+} 
