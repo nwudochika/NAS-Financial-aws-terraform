@@ -313,7 +313,7 @@ resource "aws_security_group" "vpc_endpoints" {
 resource "aws_security_group" "alb_sg" {
   vpc_id      = aws_vpc.main.id
   name        = "alb-sg"
-  description = "Public ALB — HTTPS only"
+  description = "Public ALB - HTTPS only"
   ingress {
     description = "HTTPS"
     from_port   = 443
@@ -332,7 +332,7 @@ resource "aws_security_group" "alb_sg" {
 resource "aws_security_group" "ec2_sg" {
   vpc_id      = aws_vpc.main.id
   name        = "ec2-sg"
-  description = "Web servers — HTTP from ALB only"
+  description = "Web servers - HTTP from ALB only"
   ingress {
     from_port       = 80
     to_port         = 80
@@ -350,7 +350,7 @@ resource "aws_security_group" "ec2_sg" {
 resource "aws_security_group" "intranet_alb_sg" {
   vpc_id      = aws_vpc.main.id
   name        = "intranet-alb-sg"
-  description = "Internal ALB — HTTP from VPC"
+  description = "Internal ALB - HTTP from VPC"
   ingress {
     from_port   = 80
     to_port     = 80
@@ -369,7 +369,7 @@ resource "aws_security_group" "intranet_alb_sg" {
 resource "aws_security_group" "intranet_ec2_sg" {
   vpc_id      = aws_vpc.main.id
   name        = "intranet-ec2-sg"
-  description = "Intranet app — HTTP from internal ALB only"
+  description = "Intranet app - HTTP from internal ALB only"
   ingress {
     from_port       = 80
     to_port         = 80
@@ -388,7 +388,7 @@ resource "aws_security_group" "intranet_ec2_sg" {
 resource "aws_security_group" "database_sg" {
   vpc_id      = aws_vpc.main.id
   name        = "database-access-sg"
-  description = "RDS — 3306 from web servers only"
+  description = "RDS - 3306 from web servers only"
   ingress {
     from_port       = 3306
     to_port         = 3306
@@ -407,7 +407,7 @@ resource "aws_security_group" "database_sg" {
 resource "aws_security_group" "efs_sg" {
   vpc_id      = aws_vpc.main.id
   name        = "efs-access-sg"
-  description = "EFS — NFS from web servers only"
+  description = "EFS - NFS from web servers only"
   ingress {
     from_port       = 2049
     to_port         = 2049

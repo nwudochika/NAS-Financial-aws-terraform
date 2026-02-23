@@ -8,3 +8,12 @@ provider "aws" {
   alias  = "dr"
   region = "us-west-2"
 }
+
+terraform {
+  backend "s3" {
+    bucket         = "terraform-state-fidelis-bucket"
+    key            = "nas-folder/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+  }
+}
