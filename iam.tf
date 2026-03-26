@@ -1,5 +1,5 @@
 # =============================================================================
-# IAM — Access control, EC2 SSM, Backup role, N2G Auditing
+# IAM — Access control, EC2 SSM, Backup role
 # =============================================================================
 
 resource "aws_iam_policy" "full_admin_no_billing" {
@@ -124,34 +124,6 @@ resource "aws_iam_group_policy_attachment" "nas_security_deny_web_ssm" {
 resource "aws_iam_group_policy_attachment" "operations_deny_web_ssm" {
   group = aws_iam_group.Operations.name
   policy_arn = aws_iam_policy.deny_web_server_ssm.arn
-}
-
-# N2G Auditing — Trusted Advisor only (cross-account)
-resource "aws_iam_role" "n2g_trusted_advisor" {
-  count  = length(var.n2g_auditing_account_id) > 0 ? 1 : 0
-  name   = "N2G-Auditing-TrustedAdvisor-Role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { AWS = "arn:aws:iam::${var.n2g_auditing_account_id}:root" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-}
-resource "aws_iam_role_policy" "n2g_trusted_advisor_only" {
-  count  = length(var.n2g_auditing_account_id) > 0 ? 1 : 0
-  name   = "TrustedAdvisorOnly"
-  role   = aws_iam_role.n2g_trusted_advisor[0].id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid    = "TrustedAdvisorFullAccess"
-      Effect = "Allow"
-      Action = ["support:DescribeTrustedAdvisorChecks", "support:DescribeTrustedAdvisorCheckResult", "support:DescribeTrustedAdvisorCheckSummaries", "support:RefreshTrustedAdvisorCheck", "support:DescribeCases", "support:DescribeSeverityLevels"]
-      Resource = "*"
-    }]
-  })
 }
 
 # AWS Backup role

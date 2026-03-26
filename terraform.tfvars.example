@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars and fill in. Do not commit terraform.tfvars if it has secrets.
+
+# certificate_arn = "arn:aws:acm:..."
+# zone_id         = "Z..."
+# db_username     = "admin"
+# db_password     = "use-a-strong-password"

@@ -36,21 +36,3 @@ output "website_alerts_sns_topic_arn" {
   description = "SNS topic for website-down alerts; subscribe email in tfvars (alert_email)"
   value       = aws_sns_topic.website_alerts.arn
 }
-
-# Intranet (access from within VPC only, e.g. via VPN)
-output "intranet_alb_dns_name" {
-  description = "Internal ALB DNS for intranet app (HTTP, VPC-only)"
-  value       = aws_lb.intranet_alb.dns_name
-}
-
-# N2G Auditing (set n2g_auditing_account_id to create role)
-output "n2g_trusted_advisor_role_arn" {
-  description = "Role ARN for N2G to assume (Trusted Advisor only); use when n2g_auditing_account_id is set"
-  value       = length(aws_iam_role.n2g_trusted_advisor) > 0 ? aws_iam_role.n2g_trusted_advisor[0].arn : null
-}
-
-# PII storage
-output "customer_pii_bucket" {
-  description = "S3 bucket for customer PII (encrypted, 30d then Glacier, 5y retention)"
-  value       = aws_s3_bucket.customer_pii.id
-}

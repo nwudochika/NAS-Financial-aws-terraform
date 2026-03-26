@@ -58,44 +58,6 @@ resource "aws_security_group" "ec2_sg" {
   }
 }
 
-resource "aws_security_group" "intranet_alb_sg" {
-  vpc_id      = aws_vpc.main.id
-  name        = "intranet-alb-sg"
-  description = "Internal ALB - HTTP from VPC"
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = [aws_vpc.main.cidr_block]
-  }
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  tags = { Name = "intranet-alb-sg" }
-}
-
-resource "aws_security_group" "intranet_ec2_sg" {
-  vpc_id      = aws_vpc.main.id
-  name        = "intranet-ec2-sg"
-  description = "Intranet app - HTTP from internal ALB only"
-  ingress {
-    from_port       = 80
-    to_port         = 80
-    protocol        = "tcp"
-    security_groups = [aws_security_group.intranet_alb_sg.id]
-  }
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  tags = { Name = "intranet-ec2-sg" }
-}
-
 resource "aws_security_group" "database_sg" {
   vpc_id      = aws_vpc.main.id
   name        = "database-access-sg"

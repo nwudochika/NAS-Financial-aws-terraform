@@ -36,9 +36,3 @@ variable "alert_email" {
   type        = string
   default     = ""
 }
-
-variable "n2g_auditing_account_id" {
-  description = "AWS account ID of N2G Auditing (for cross-account Trusted Advisor role)"
-  type        = string
-  default     = ""
-}
