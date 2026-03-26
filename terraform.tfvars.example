@@ -4,3 +4,6 @@
 # zone_id         = "Z..."
 # db_username     = "admin"
 # db_password     = "use-a-strong-password"
+
+# Optional — default is AL2023 us-east-1; override if you change region/AMI
+# ec2_ami_id      = "ami-02dfbd4ff395f2a1b"

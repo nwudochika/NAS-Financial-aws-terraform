@@ -4,6 +4,12 @@ variable "instance_type" {
   default     = "t2.micro"
 }
 
+variable "ec2_ami_id" {
+  description = "AMI ID for public web tier launch template (Amazon Linux 2023 x86_64 in us-east-1)"
+  type        = string
+  default     = "ami-02dfbd4ff395f2a1b"
+}
+
 variable "certificate_arn" {
   description = "ARN of the ACM certificate for HTTPS listener"
   type        = string
