@@ -30,7 +30,8 @@ resource "aws_backup_selection" "dr" {
   plan_id      = aws_backup_plan.dr.id
   iam_role_arn = aws_iam_role.backup.arn
   resources = [
-    "arn:aws:rds:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:db:${aws_db_instance.default.id}",
+    # Use computed ARN — last segment must be DB *identifier* (e.g. nas-financial-db), not aws_db_instance.id (db-… resource id).
+    aws_db_instance.default.arn,
     aws_efs_file_system.main.arn
   ]
 }
